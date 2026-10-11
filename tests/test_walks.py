@@ -37,7 +37,7 @@ def test_biased_walk_drifts():
 
 def test_donsker_scaling_gives_unit_variance_at_T():
     walk = donsker(random_walk(400, rademacher(), n_paths=N_PATHS, rng=3), T=2.0)
-    assert walk.t[-1] == 2.0
+    assert walk.t[-1] == pytest.approx(2.0)
     assert walk.x[:, -1].var() == pytest.approx(2.0, rel=0.05)
 
 

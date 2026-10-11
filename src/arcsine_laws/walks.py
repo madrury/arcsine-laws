@@ -7,27 +7,45 @@ zero at time zero.
 Three ways to get (approximately) Brownian motion:
 
 * `random_walk` with `gaussian(variance=dt)` steps and `dt=dt` is *exactly*
-  Brownian motion observed on the grid 0, dt, 2 dt, ...
+  Brownian motion observed on the grid 0, dt, 2*dt, ...
 * `donsker` rescales any mean zero walk (e.g. a simple +-1 walk) in time and
   space; as n_steps grows the result converges in distribution to Brownian
   motion on [0, T].
 * `refine` (Levy's midpoint construction) takes exact Brownian values on a grid
-  and samples the values at every midpoint from the Brownian bridge. Starting
-  from B(0) = 0, B(T) ~ N(0, T) and refining repeatedly gives Brownian motion
-  at the dyadic rationals; `brownian_refinements` returns every level.
+  and samples the values at every midpoint from the Brownian bridge connecting the
+  adjacent points. Starting from B(0) = 0, B(T) ~ N(0, T) and refining repeatedly
+  gives Brownian motion at the dyadic rationals; `brownian_refinements` returns
+  every level in a list[Paths].
 """
 
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
 
-type Seed = np.random.Generator | int | None
-type StepSampler = Callable[[np.random.Generator, tuple[int, ...]], np.ndarray]
+from arcsine_laws.types import Seed, StepSampler
 
 
 @dataclass(frozen=True)
 class Paths:
+    """A collection of sample paths observed on a shared time grid.
+
+    Parameters
+    ----------
+    t : np.ndarray, shape (n_points,)
+        Increasing observation times, starting at 0.
+    x : np.ndarray, shape (n_paths, n_points)
+        Path values; x[i, j] is the value of path i at time t[j].
+
+    Attributes
+    ----------
+    n_paths : int
+        Number of sample paths.
+    n_steps : int
+        Number of steps in each path, one fewer than the number of points.
+    dx : np.ndarray, shape (n_paths, n_steps)
+        The increments of each path.
+    """
+
     t: np.ndarray
     x: np.ndarray
 
@@ -41,35 +59,56 @@ class Paths:
 
     @property
     def dx(self) -> np.ndarray:
-        """The increments of each path, shape (n_paths, n_steps)."""
         return np.diff(self.x, axis=1)
 
 
+#-----------------------------------------------------------------------------
 # Step distributions.
-
-
+#-----------------------------------------------------------------------------
 def rademacher(p: float = 0.5) -> StepSampler:
-    """Steps of +1 with probability p, -1 otherwise (a simple random walk)."""
+    """Steps of +1 or -1, as in a simple random walk.
 
+    Parameters
+    ----------
+    p : float, default 0.5
+        Probability of a +1 step. Values other than 0.5 give a walk with drift
+        2*p - 1 per step.
+
+    Returns
+    -------
+    StepSampler
+        A function `sample(rng, size)` returning an array of steps.
+    """
     def sample(rng: np.random.Generator, size: tuple[int, ...]) -> np.ndarray:
         return np.where(rng.random(size) < p, 1.0, -1.0)
-
     return sample
 
 
 def gaussian(variance: float = 1.0, mean: float = 0.0) -> StepSampler:
-    """Normally distributed steps."""
-    scale = np.sqrt(variance)
+    """Normally distributed steps.
 
+    Parameters
+    ----------
+    variance : float, default 1.0
+        Variance of each step. To sample Brownian motion exactly on a grid
+        with spacing `dt`, use `variance=dt`.
+    mean : float, default 0.0
+        Mean of each step, i.e. the drift per step.
+
+    Returns
+    -------
+    StepSampler
+        A function `sample(rng, size)` returning an array of steps.
+    """
+    scale = np.sqrt(variance)
     def sample(rng: np.random.Generator, size: tuple[int, ...]) -> np.ndarray:
         return rng.normal(mean, scale, size)
-
     return sample
 
 
+#-----------------------------------------------------------------------------
 # Walks.
-
-
+#-----------------------------------------------------------------------------
 def random_walk(
     n_steps: int,
     step: StepSampler | None = None,
@@ -77,10 +116,31 @@ def random_walk(
     dt: float = 1.0,
     rng: Seed = None,
 ) -> Paths:
-    """Sample n_paths walks of n_steps i.i.d. steps, with steps spaced dt apart.
+    """Sample random walks with i.i.d. steps.
 
+    Parameters
+    ----------
+    n_steps : int
+        Number of steps in each walk.
+    step : StepSampler, optional
+        Distribution of the steps, e.g. `rademacher()` or `gaussian(...)`.
+        Defaults to `rademacher()`, a simple random walk.
+    n_paths : int, default 1
+        Number of independent walks to sample.
+    dt : float, default 1.0
+        Time between consecutive steps.
+    rng : np.random.Generator, int or None, optional
+        Random generator, or a seed for one.
+
+    Returns
+    -------
+    Paths
+        Walks with n_steps + 1 points at times 0, dt, 2*dt, ..., n_steps*dt.
+
+    Examples
+    --------
     >>> walk = random_walk(1000, rademacher(), n_paths=5)
-    >>> bm = random_walk(1024, gaussian(variance=1 / 1024), dt=1 / 1024)
+    >>> bm = random_walk(1024, gaussian(variance=1/1024), dt=1/1024)
     """
     rng = np.random.default_rng(rng)
     step = step or rademacher()
@@ -94,8 +154,29 @@ def random_walk(
 def donsker(paths: Paths, step_variance: float = 1.0, T: float = 1.0) -> Paths:
     """Rescale a walk onto [0, T] so it approximates Brownian motion.
 
-    The k'th of n steps lands at time k T / n, and space is scaled by
-    sqrt(T / (n step_variance)) so the endpoint has variance T.
+    The k'th of n steps lands at time k*T / n, and space is scaled by
+
+        sqrt(T / (n*step_variance))
+
+    so the endpoint has variance `T`. By Donsker's theorem the result converges
+    in distribution to Brownian motion as n grows.
+
+    https://en.wikipedia.org/wiki/Donsker%27s_theorem
+
+    Parameters
+    ----------
+    paths : Paths
+        Mean zero walks to rescale. Only the number of steps is used from the
+        time grid.
+    step_variance : float, default 1.0
+        Variance of a single step of the walk.
+    T : float, default 1.0
+        Length of the time interval to rescale onto.
+
+    Returns
+    -------
+    Paths
+        The rescaled walks.
     """
     n = paths.n_steps
     t = T * np.arange(n + 1) / n
@@ -103,32 +184,58 @@ def donsker(paths: Paths, step_variance: float = 1.0, T: float = 1.0) -> Paths:
     return Paths(t, x)
 
 
+#-----------------------------------------------------------------------------
 # Brownian motion by midpoint refinement.
-
-
+#-----------------------------------------------------------------------------
 def refine(paths: Paths, rng: Seed = None, variance: float = 1.0) -> Paths:
     """Insert a Brownian bridge sample at the midpoint of every interval.
 
-    Given B(a) and B(b), the midpoint B((a + b) / 2) is normal with mean
-    (B(a) + B(b)) / 2 and variance (b - a) / 4. `variance` is the variance of
-    the Brownian motion per unit time. Existing points are left unchanged.
+    If B is Brownian motion with variance v per unit time (v = `variance`),
+    then given B(a) and B(b), the midpoint B((a + b) / 2) is normal with mean
+    (B(a) + B(b)) / 2 and variance:
+
+        v * (b - a) / 4
+
+    So, if the input is exact Brownian motion on its grid, so is the output on
+    the finer grid.
+
+    Parameters
+    ----------
+    paths : Paths
+        Paths to refine. Existing points are left unchanged.
+    rng : np.random.Generator, int or None, optional
+        Random generator, or a seed for one.
+    variance : float, default 1.0
+        Variance per unit time of the Brownian motion.
+
+    Returns
+    -------
+    Paths
+        Paths with 2*n_steps steps; the original points sit at the even indices
+        and the new midpoints at the odd ones.
     """
     rng = np.random.default_rng(rng)
-    h = np.diff(paths.t)
-    t_mid = paths.t[:-1] + h / 2
-    x_mid = (paths.x[:, :-1] + paths.x[:, 1:]) / 2 + rng.normal(
-        0.0, np.sqrt(variance * h / 4), (paths.n_paths, len(h))
+    dt = np.diff(paths.t)
+    t_mid = paths.t[:-1] + dt / 2
+    x_mid = (
+        (paths.x[:, :-1] + paths.x[:, 1:]) / 2
+        + rng.normal(
+            0.0,
+            np.sqrt(variance * dt / 4),
+            size=(paths.n_paths, len(dt))
+        )
     )
-
     t = np.empty(2 * len(paths.t) - 1)
-    t[0::2], t[1::2] = paths.t, t_mid
+    t[0::2] = paths.t
+    t[1::2] = t_mid
     x = np.empty((paths.n_paths, len(t)))
-    x[:, 0::2], x[:, 1::2] = paths.x, x_mid
+    x[:, 0::2] = paths.x
+    x[:, 1::2] = x_mid
     return Paths(t, x)
 
 
 def brownian_refinements(
-    levels: int,
+    n_refinements: int,
     n_paths: int = 1,
     T: float = 1.0,
     rng: Seed = None,
@@ -136,24 +243,60 @@ def brownian_refinements(
 ) -> list[Paths]:
     """Brownian motion on [0, T] at successively finer dyadic grids.
 
-    Element k of the result has 2**k steps, and each level contains every
-    point of the one before it, so they are the same paths at finer and finer
-    resolution.
+    Each level contains every point of the one before it, so these are the
+    same paths at finer and finer resolution.
+
+    Parameters
+    ----------
+    n_refinements : int
+        Number of midpoint refinements to apply.
+    n_paths : int, default 1
+        Number of independent paths to sample.
+    T : float, default 1.0
+        Length of the time interval.
+    rng : np.random.Generator, int or None, optional
+        Random generator, or a seed for one.
+    variance : float, default 1.0
+        Variance per unit time of the Brownian motion.
+
+    Returns
+    -------
+    list of Paths
+        The n_refinements + 1 levels; element k has 2**k steps.
     """
     rng = np.random.default_rng(rng)
     coarse = random_walk(1, gaussian(variance * T), n_paths=n_paths, dt=T, rng=rng)
     refinements = [coarse]
-    for _ in range(levels):
+    for _ in range(n_refinements):
         refinements.append(refine(refinements[-1], rng=rng, variance=variance))
     return refinements
 
 
 def brownian_dyadic(
-    levels: int,
+    n_refinements: int,
     n_paths: int = 1,
     T: float = 1.0,
     rng: Seed = None,
     variance: float = 1.0,
 ) -> Paths:
-    """Brownian motion on [0, T] sampled at the 2**levels + 1 dyadic points."""
-    return brownian_refinements(levels, n_paths, T, rng, variance)[-1]
+    """Brownian motion on [0, T] sampled at 2**n_refinements + 1 dyadic points.
+
+    Parameters
+    ----------
+    n_refinements : int
+        Number of midpoint refinements; the result has 2**n_refinements steps.
+    n_paths : int, default 1
+        Number of independent paths to sample.
+    T : float, default 1.0
+        Length of the time interval.
+    rng : np.random.Generator, int or None, optional
+        Random generator, or a seed for one.
+    variance : float, default 1.0
+        Variance per unit time of the Brownian motion.
+
+    Returns
+    -------
+    Paths
+        The finest level of `brownian_refinements`.
+    """
+    return brownian_refinements(n_refinements, n_paths, T, rng, variance)[-1]

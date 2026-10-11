@@ -29,3 +29,14 @@ line-length = 88
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Formatting is done by hand (see ~/.claude/CLAUDE.md); don't run `ruff format`,
+# it would undo the operator spacing conventions. Lint whitespace only where it
+# agrees with them.
+[tool.ruff.lint]
+preview = true
+extend-select = ["E2", "W"]
+ignore = [
+    "E226",  # Arithmetic spacing shows precedence: 2*x + 1.
+    "E265",  # Section banners: #----------
+]
