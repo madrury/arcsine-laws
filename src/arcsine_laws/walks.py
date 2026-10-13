@@ -61,6 +61,11 @@ class Paths:
     def dx(self) -> np.ndarray:
         return np.diff(self.x, axis=1)
 
+    def __getitem__(self, idx):
+        if isinstance(idx, slice):
+            return Paths(self.t[idx], self.x[:, idx])
+        else:
+            raise TypeError("Expecting a slice object.")
 
 #-----------------------------------------------------------------------------
 # Step distributions.

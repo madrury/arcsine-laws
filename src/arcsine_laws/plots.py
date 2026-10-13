@@ -5,46 +5,96 @@ and returns it. None of them create figures, so the caller controls layout;
 wide axes, e.g. `plt.subplots(figsize=(14, 4))`, suit sample paths best.
 """
 
-import matplotlib.pyplot as plt
+
+from collections.abc import Sequence
+
 import numpy as np
+from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap
 from scipy import stats
 
 from arcsine_laws.walks import Paths
 
+
 #-----------------------------------------------------------------------------
 # Colors.
 #-----------------------------------------------------------------------------
-BLUE = "#2a78d6"
-ORANGE = "#eb6834"
-INK = "#52514e"
-GRID = "#e4e3df"
+class Colors:
+    """Named colors used across the plots, as hex strings.
 
-# Light to dark blue, for ordered sequences like refinement levels.
-BLUES = LinearSegmentedColormap.from_list("blues", ["#86b6ef", "#0d366b"])
+    Attributes
+    ----------
+    BLUE : str
+        Default color for paths and histogram bars.
+    LIGHTBLUE : str
+        Light end of the blue ramp.
+    DARKBLUE : str
+        Dark end of the blue ramp.
+    WARMGREEN : str
+        A yellowish green, about as light as BLUE.
+    DARKGREEN : str
+        A dark green, about as dark as DARKBLUE.
+    ORANGE : str
+        Highlights and reference curves drawn over the blues.
+    INK : str
+        Axes, ticks, labels, and reference lines.
+    GRID : str
+        Grid lines.
+    """
+
+    BLUE = "#2a78d6"
+    LIGHTBLUE = "#86b6ef"
+    DARKBLUE = "#0d366b"
+    WARMGREEN = "#5e9e2f"
+    DARKGREEN = "#1d4f22"
+    ORANGE = "#eb6834"
+    INK = "#52514e"
+    GRID = "#e4e3df"
+
+
+class ColorMaps:
+    """Color maps for ordered sequences, like refinement levels.
+
+    Attributes
+    ----------
+    BLUES : LinearSegmentedColormap
+        Light to dark blue.
+    BLUE_GREEN : LinearSegmentedColormap
+        Blue to warm green, at roughly constant lightness, so neither end
+        fades into the background.
+    """
+
+    BLUES = LinearSegmentedColormap.from_list(
+        "blues",
+        [Colors.LIGHTBLUE, Colors.DARKBLUE],
+    )
+    BLUE_GREEN = LinearSegmentedColormap.from_list(
+        "blue_green",
+        [Colors.BLUE, Colors.WARMGREEN],
+    )
 
 
 #-----------------------------------------------------------------------------
 # Sample paths.
 #-----------------------------------------------------------------------------
 def plot_paths(
-    ax: plt.Axes,
+    ax: Axes,
     paths: Paths,
     *,
-    color: str = BLUE,
+    color: str = Colors.BLUE,
     alpha: float | None = None,
     linewidth: float = 1.0,
     highlight: int | None = None,
-) -> plt.Axes:
+) -> Axes:
     """Draw every path in a collection, with a reference line at zero.
 
     Parameters
     ----------
-    ax : plt.Axes
+    ax : Axes
         Axes to draw on.
     paths : Paths
         The paths to draw.
-    color : str, default BLUE
+    color : str, default Colors.BLUE
         Line color for the paths.
     alpha : float, optional
         Line opacity. Defaults to a value that shrinks with the number of
@@ -59,12 +109,12 @@ def plot_paths(
 
     Returns
     -------
-    plt.Axes
+    Axes
         The axes drawn on.
     """
     if alpha is None:
         alpha = np.clip(3 / np.sqrt(paths.n_paths), 0.05, 1.0)
-    ax.axhline(0, color=INK, linewidth=0.8)
+    ax.axhline(0, color=Colors.INK, linewidth=0.8, linestyle='--')
     ax.plot(
         paths.t,
         paths.x.T,
@@ -76,7 +126,7 @@ def plot_paths(
         ax.plot(
             paths.t,
             paths.x[highlight],
-            color=ORANGE,
+            color=Colors.ORANGE,
             linewidth=1.5 * linewidth,
         )
     ax.set_xlim(paths.t[0], paths.t[-1])
@@ -86,12 +136,12 @@ def plot_paths(
 
 
 def plot_refinements(
-    ax: plt.Axes,
+    ax: Axes,
     refinements: list[Paths],
     *,
     path: int = 0,
     max_markers: int = 64,
-) -> plt.Axes:
+) -> Axes:
     """Draw one path at each level of a midpoint refinement, coarse to fine.
 
     Coarser levels are lighter and drawn underneath finer ones. Levels with
@@ -100,7 +150,7 @@ def plot_refinements(
 
     Parameters
     ----------
-    ax : plt.Axes
+    ax : Axes
         Axes to draw on.
     refinements : list of Paths
         Successive refinements of the same paths, coarse to fine, as returned
@@ -112,11 +162,11 @@ def plot_refinements(
 
     Returns
     -------
-    plt.Axes
+    Axes
         The axes drawn on.
     """
-    colors = BLUES(np.linspace(0, 1, len(refinements)))
-    ax.axhline(0, color=INK, linewidth=0.8)
+    colors = ColorMaps.BLUES(np.linspace(0, 1, len(refinements)))
+    ax.axhline(0, color=Colors.INK, linewidth=0.8, linestyle='--')
     for level, color in zip(refinements, colors):
         marker = "o" if level.n_steps <= max_markers else None
         label = "1 step" if level.n_steps == 1 else f"{level.n_steps} steps"
@@ -141,45 +191,59 @@ def plot_refinements(
 # Distributions.
 #-----------------------------------------------------------------------------
 def plot_histogram(
-    ax: plt.Axes,
+    ax: Axes,
     values: np.ndarray,
     *,
-    bins: int | np.ndarray | None = None,
+    bins: int | Sequence[float] | np.ndarray | None = None,
+    density: bool = True,
     normal: tuple[float, float] | None = None,
-    color: str = BLUE,
-) -> plt.Axes:
-    """Density histogram of samples, optionally against a normal density.
+    color: str = Colors.BLUE,
+) -> Axes:
+    """Histogram of samples, optionally against a normal density.
 
     Samples from a lattice, like the endpoints of a simple random walk, are
     binned with one bin per lattice point. Automatic bins would alias against
     the lattice and show a spurious comb pattern.
 
+    When plotting counts, the normal density is scaled to expected counts per
+    bin, assuming equal width bins:
+
+        n_samples * bin_width * pdf(x)
+
     Parameters
     ----------
-    ax : plt.Axes
+    ax : Axes
         Axes to draw on.
     values : np.ndarray
         One dimensional array of samples, e.g. `paths.x[:, -1]` for the
         endpoints of a collection of walks.
-    bins : int or np.ndarray, optional
+    bins : int, sequence of float, or np.ndarray, optional
         Number of bins, or bin edges. Defaults to one bin per distinct value
         if there are at most 200 of them, and to 50 bins otherwise.
+    density : bool, default True
+        If true, plot probability density. Otherwise plot bin counts.
     normal : (float, float), optional
         Mean and variance of a normal density to draw over the histogram.
-    color : str, default BLUE
+    color : str, default Colors.BLUE
         Fill color of the bars.
 
     Returns
     -------
-    plt.Axes
+    Axes
         The axes drawn on.
     """
+    # Matplotlib's type stubs accept a sequence of edges, but not an array.
+    hist_bins: int | Sequence[float]
     if bins is None:
-        bins = _default_bins(values)
-    ax.hist(
+        hist_bins = _default_bins(values)
+    elif isinstance(bins, np.ndarray):
+        hist_bins = bins.tolist()
+    else:
+        hist_bins = bins
+    _, edges, _ = ax.hist(
         values,
-        bins=bins,
-        density=True,
+        bins=hist_bins,
+        density=density,
         color=color,
         edgecolor="white",
         linewidth=0.5,
@@ -190,10 +254,11 @@ def plot_histogram(
         variance = normal[1]
         sd = np.sqrt(variance)
         grid = np.linspace(mean - 4*sd, mean + 4*sd, 400)
+        scale = 1.0 if density else len(values) * np.diff(edges).mean()
         ax.plot(
             grid,
-            stats.norm.pdf(grid, mean, sd),
-            color=ORANGE,
+            scale * stats.norm.pdf(grid, mean, sd),
+            color=Colors.ORANGE,
             linewidth=2.0,
             label=f"N({mean:g}, {variance:g})",
         )
@@ -205,25 +270,25 @@ def plot_histogram(
 #-----------------------------------------------------------------------------
 # Helpers.
 #-----------------------------------------------------------------------------
-def _default_bins(values: np.ndarray) -> int | np.ndarray:
+def _default_bins(values: np.ndarray) -> int | list[float]:
     lattice = np.unique(values)
     if len(lattice) > 200:
         return 50
     if len(lattice) == 1:
-        return np.array([lattice[0] - 0.5, lattice[0] + 0.5])
+        return [lattice[0] - 0.5, lattice[0] + 0.5]
     # Edges halfway between neighbouring lattice points, plus half a spacing
     # beyond each end.
     midpoints = (lattice[:-1] + lattice[1:]) / 2
     first = lattice[0] - (midpoints[0] - lattice[0])
     last = lattice[-1] + (lattice[-1] - midpoints[-1])
-    return np.concatenate([[first], midpoints, [last]])
+    return [first, *midpoints.tolist(), last]
 
 
-def _tidy(ax: plt.Axes) -> None:
+def _tidy(ax: Axes) -> None:
     ax.spines[["top", "right"]].set_visible(False)
-    ax.spines[["left", "bottom"]].set_color(INK)
-    ax.tick_params(colors=INK)
-    ax.xaxis.label.set_color(INK)
-    ax.yaxis.label.set_color(INK)
-    ax.grid(color=GRID, linewidth=0.6)
+    ax.spines[["left", "bottom"]].set_color(Colors.INK)
+    ax.tick_params(colors=Colors.INK)
+    ax.xaxis.label.set_color(Colors.INK)
+    ax.yaxis.label.set_color(Colors.INK)
+    ax.grid(color=Colors.GRID, linewidth=0.6, linestyle='--')
     ax.set_axisbelow(True)
