@@ -11,8 +11,8 @@ from collections.abc import Sequence
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap
-from scipy import stats
 
+from arcsine_laws.types import ArcsineStatistic, Distribution
 from arcsine_laws.walks import Paths
 
 
@@ -187,6 +187,146 @@ def plot_refinements(
     return ax
 
 
+def plot_path_statistics(
+    ax: Axes,
+    paths: Paths,
+    *,
+    path: int = 0,
+    show: ArcsineStatistic = ArcsineStatistic.ALL,
+) -> Axes:
+    """Draw one path, marking the statistics of the arcsine laws.
+
+    Each statistic has the arcsine distribution in the Brownian limit, and
+    each is drawn only if selected in `show`:
+
+    * TIME_POSITIVE shades the area between the path and zero where the path
+      is above zero, and marks the positive steps with a thick bar along the
+      t-axis. The bar's total length is the time positive.
+    * LAST_ZERO draws a vertical line at the last zero.
+    * MAXIMUM marks the first maximum with a dot.
+
+    Parameters
+    ----------
+    ax : Axes
+        Axes to draw on.
+    paths : Paths
+        The paths to draw from.
+    path : int, default 0
+        Index of the path to draw.
+    show : ArcsineStatistic, default ArcsineStatistic.ALL
+        Which statistics to mark, e.g. `ArcsineStatistic.LAST_ZERO`, or several
+        combined with `|`.
+
+    Returns
+    -------
+    Axes
+        The axes drawn on.
+    """
+    one = Paths(paths.t, paths.x[path:path + 1])
+    t = one.t
+    x = one.x[0]
+    ax.axhline(0, color=Colors.INK, linewidth=0.8, linestyle='--')
+    if ArcsineStatistic.TIME_POSITIVE in show:
+        shade_under_walk(ax, one)
+        plot_positive_intervals(ax, one, 0.0)
+    ax.plot(t, x, color=Colors.BLUE, linewidth=1.0)
+    if ArcsineStatistic.LAST_ZERO in show:
+        t_last_zero = one.last_zero()[0]
+        ax.axvline(
+            t_last_zero,
+            color=Colors.ORANGE,
+            linewidth=1.5,
+            label=f"last zero: {t_last_zero:.3g}",
+        )
+    if ArcsineStatistic.MAXIMUM in show:
+        i_max = one.argmax()[0]
+        ax.plot(
+            t[i_max],
+            x[i_max],
+            marker="o",
+            markersize=7,
+            color=Colors.DARKGREEN,
+            linestyle="none",
+            label=f"maximum at: {t[i_max]:.3g}",
+        )
+    ax.set_xlim(t[0], t[-1])
+    ax.set_xlabel("t")
+    if show:
+        ax.legend(frameon=False)#, loc="upper left", bbox_to_anchor=(1.01, 1))
+    _tidy(ax)
+    return ax
+
+
+def shade_under_walk(ax: Axes, one: Paths) -> Axes:
+    """Shade the area bounded *under* a random walk path and above the
+    horizontal axis.
+
+    Parameters
+    ----------
+    ax : Axes
+        Axes to draw on.
+    one : Paths
+        The path (singular) to draw from.
+
+    Returns
+    -------
+    Axes
+        The axes drawn on.
+    """
+    t = one.t
+    x = one.x[0]
+    ax.fill_between(
+        t,
+        0,
+        x,
+        where=x > 0,
+        interpolate=True,
+        color=Colors.LIGHTBLUE,
+        alpha=0.5,
+        linewidth=0
+    )
+    return ax
+
+def plot_positive_intervals(ax: Axes, one: Paths, y: float) -> Axes:
+    """Highlight (in the same sense of a highlighter pen) intervals over which
+    the random walk is positive.
+
+    Parameters
+    ----------
+    ax : Axes
+        Axes to draw on.
+    one : Paths
+        The path (singular) to draw from.
+
+    Returns
+    -------
+    Axes
+        The axes drawn on.
+    """
+    # Runs of consecutive positive steps, as (start, end) step indices. Pad
+    # with a non-positive step at each end so every run has both a rise and a
+    # fall in the differences.
+    t = one.t
+    time_positive = one.time_positive()[0]
+    positive = one.positive_steps()[0].astype(int)
+    changes = np.diff(np.concatenate([[0], positive, [0]]))
+    starts = np.flatnonzero(changes == 1)
+    ends = np.flatnonzero(changes == -1)
+    # A bar along the t-axis: x in data coordinates, y in axes coordinates.
+    ax.hlines(
+        np.full(len(starts), y),
+        t[starts],
+        t[ends],
+        # transform=ax.get_xaxis_transform(),
+        color=Colors.LIGHTBLUE,
+        linewidth=6,
+        capstyle="butt",
+        clip_on=False,
+        zorder=3,
+        label=f"time positive: {time_positive:2.0%}",
+    )
+    return ax
+
 #-----------------------------------------------------------------------------
 # Distributions.
 #-----------------------------------------------------------------------------
@@ -196,19 +336,24 @@ def plot_histogram(
     *,
     bins: int | Sequence[float] | np.ndarray | None = None,
     density: bool = True,
-    normal: tuple[float, float] | None = None,
+    reference: Distribution | None = None,
+    reference_label: str = "reference",
     color: str = Colors.BLUE,
 ) -> Axes:
-    """Histogram of samples, optionally against a normal density.
+    """Histogram of samples, optionally against a reference density.
 
     Samples from a lattice, like the endpoints of a simple random walk, are
     binned with one bin per lattice point. Automatic bins would alias against
     the lattice and show a spurious comb pattern.
 
-    When plotting counts, the normal density is scaled to expected counts per
-    bin, assuming equal width bins:
+    When plotting counts, the reference density is scaled to expected counts
+    per bin, assuming equal width bins:
 
         n_samples * bin_width * pdf(x)
+
+    A reference density may be unbounded, like the arcsine density at 0 and 1.
+    The y-axis is then capped a little above the tallest bar, or the density
+    over the central 90% of its mass, whichever is higher.
 
     Parameters
     ----------
@@ -222,8 +367,11 @@ def plot_histogram(
         if there are at most 200 of them, and to 50 bins otherwise.
     density : bool, default True
         If true, plot probability density. Otherwise plot bin counts.
-    normal : (float, float), optional
-        Mean and variance of a normal density to draw over the histogram.
+    reference : Distribution, optional
+        A distribution whose density is drawn over the histogram, e.g.
+        `scipy.stats.norm(0, 1)` or `scipy.stats.arcsine()`.
+    reference_label : str, default "reference"
+        Legend label for the reference density.
     color : str, default Colors.BLUE
         Fill color of the bars.
 
@@ -240,7 +388,7 @@ def plot_histogram(
         hist_bins = bins.tolist()
     else:
         hist_bins = bins
-    _, edges, _ = ax.hist(
+    heights, edges, _ = ax.hist(
         values,
         bins=hist_bins,
         density=density,
@@ -249,19 +397,20 @@ def plot_histogram(
         linewidth=0.5,
         label="simulated",
     )
-    if normal is not None:
-        mean = normal[0]
-        variance = normal[1]
-        sd = np.sqrt(variance)
-        grid = np.linspace(mean - 4*sd, mean + 4*sd, 400)
+    if reference is not None:
         scale = 1.0 if density else len(values) * np.diff(edges).mean()
+        grid = np.linspace(reference.ppf(1e-4), reference.ppf(1 - 1e-4), 1000)
+        curve = scale * reference.pdf(grid)
         ax.plot(
             grid,
-            scale * stats.norm.pdf(grid, mean, sd),
+            curve,
             color=Colors.ORANGE,
             linewidth=2.0,
-            label=f"N({mean:g}, {variance:g})",
+            label=reference_label,
         )
+        central = (grid >= reference.ppf(0.05)) & (grid <= reference.ppf(0.95))
+        top = max(np.max(heights), np.max(curve[central]))
+        ax.set_ylim(0, 1.15 * top)
         ax.legend(frameon=False, loc="upper right")
     _tidy(ax)
     return ax

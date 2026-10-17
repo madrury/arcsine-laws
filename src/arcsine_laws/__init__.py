@@ -1,3 +1,4 @@
+from arcsine_laws.types import ArcsineStatistic
 from arcsine_laws.walks import (
     Paths,
     brownian_dyadic,
@@ -10,6 +11,7 @@ from arcsine_laws.walks import (
 )
 
 __all__ = [
+    "ArcsineStatistic",
     "Paths",
     "brownian_dyadic",
     "brownian_refinements",

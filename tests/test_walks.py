@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from arcsine_laws import (
+    Paths,
     brownian_dyadic,
     brownian_refinements,
     donsker,
@@ -66,3 +67,57 @@ def test_dyadic_brownian_motion_covariance(variance):
     np.testing.assert_allclose(
         increments, np.diag(np.diag(increments)), atol=0.01 * variance
     )
+
+
+def test_comparisons_are_elementwise():
+    walk = random_walk(50, rademacher(), n_paths=4, rng=8)
+    np.testing.assert_array_equal(walk > 0, walk.x > 0)
+    np.testing.assert_array_equal(walk <= 1, walk.x <= 1)
+    assert (walk >= 0).shape == walk.x.shape
+
+
+def test_reductions_are_per_path():
+    walk = random_walk(50, rademacher(), n_paths=4, rng=9)
+    np.testing.assert_array_equal(walk.max(), walk.x.max(axis=1))
+    np.testing.assert_array_equal(walk.min(), walk.x.min(axis=1))
+    np.testing.assert_array_equal(walk.x[np.arange(4), walk.argmax()], walk.max())
+    np.testing.assert_array_equal(walk.x[np.arange(4), walk.argmin()], walk.min())
+
+
+# A hand checked simple walk: up, down, down, up, up, up.
+HAND = Paths(np.arange(7.0), np.array([[0.0, 1, 0, -1, 0, 1, 2]]))
+
+
+def test_time_positive_simple_walk():
+    # Steps (0, 1), (1, 0), (0, 1), (1, 2) are positive.
+    assert HAND.time_positive()[0] == 4
+
+
+def test_last_zero_simple_walk():
+    assert HAND.last_zero()[0] == 4
+
+
+def test_last_zero_interpolates_crossings():
+    paths = Paths(
+        np.array([0.0, 1.0, 2.0]),
+        np.array([
+            [0.0, 1.0, -1.0],  # Crosses halfway through the last step.
+            [0.0, 1.0, 0.0],   # Ends at zero.
+            [0.0, 1.0, 2.0],   # Never returns.
+        ]),
+    )
+    np.testing.assert_allclose(paths.last_zero(), [1.5, 2.0, 0.0])
+
+
+@pytest.mark.parametrize("statistic", ["time_positive", "last_zero", "argmax"])
+def test_arcsine_laws(statistic):
+    # In the Brownian limit each statistic, on [0, 1], has the arcsine
+    # distribution, with cdf 2/pi * arcsin(sqrt(x)).
+    walks = donsker(random_walk(1000, rademacher(), n_paths=N_PATHS, rng=10))
+    if statistic == "argmax":
+        values = walks.t[walks.argmax()]
+    else:
+        values = getattr(walks, statistic)()
+    for x in [0.05, 0.25, 0.5, 0.75, 0.95]:
+        expected = 2 / np.pi * np.arcsin(np.sqrt(x))
+        assert np.mean(values <= x) == pytest.approx(expected, abs=0.02)

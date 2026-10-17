@@ -18,16 +18,24 @@ Three ways to get (approximately) Brownian motion:
   every level in a list[Paths].
 """
 
-from dataclasses import dataclass
+from typing import Self
+from dataclasses import dataclass, replace
+from collections.abc import Sequence
 
 import numpy as np
+
 
 from arcsine_laws.types import Seed, StepSampler
 
 
-@dataclass(frozen=True)
+# Comparisons return element-wise arrays, like numpy, so the dataclass's own
+# field-by-field __eq__ is turned off.
+@dataclass(frozen=True, eq=False)
 class Paths:
     """A collection of sample paths observed on a shared time grid.
+
+    Comparing with a number, e.g. `paths > 0`, gives a boolean array of shape
+    (n_paths, n_points), comparing every point of every path.
 
     Parameters
     ----------
@@ -42,6 +50,8 @@ class Paths:
         Number of sample paths.
     n_steps : int
         Number of steps in each path, one fewer than the number of points.
+    dt : np.ndarray, shape (n_steps,)
+        The time increments, shared by every path.
     dx : np.ndarray, shape (n_paths, n_steps)
         The increments of each path.
     """
@@ -58,14 +68,116 @@ class Paths:
         return len(self.t) - 1
 
     @property
+    def dt(self) -> np.ndarray:
+        """Time increments."""
+        return np.diff(self.t)
+
+    @property
     def dx(self) -> np.ndarray:
+        """Space increments."""
         return np.diff(self.x, axis=1)
 
     def __getitem__(self, idx):
-        if isinstance(idx, slice):
+        if isinstance(idx, int):
+            return Paths(self.t, self.x[[idx], :])
+        elif isinstance(idx, slice):
             return Paths(self.t[idx], self.x[:, idx])
         else:
-            raise TypeError("Expecting a slice object.")
+            raise TypeError(f"No indexing implmented for {type(idx)}")
+
+    def reorder(self, idx: Sequence[int]) -> Self:
+        return replace(self, x=self.x[idx, :])
+
+    def __lt__(self, other: float | np.ndarray) -> np.ndarray:
+        return self.x < other
+
+    def __le__(self, other: float | np.ndarray) -> np.ndarray:
+        return self.x <= other
+
+    def __gt__(self, other: float | np.ndarray) -> np.ndarray:
+        return self.x > other
+
+    def __ge__(self, other: float | np.ndarray) -> np.ndarray:
+        return self.x >= other
+
+    def max(self) -> np.ndarray:
+        """The maximum of each path, shape (n_paths,)."""
+        return self.x.max(axis=1)
+
+    def min(self) -> np.ndarray:
+        """The minimum of each path, shape (n_paths,)."""
+        return self.x.min(axis=1)
+
+    def range(self) -> np.ndarray:
+        """Range of each path, max - min, shape (n_paths,)."""
+        return self.max() - self.min()
+
+    def argmax(self) -> np.ndarray:
+        """Index of the first maximum of each path, shape (n_paths,).
+
+        The time of the maximum is `paths.t[paths.argmax()]`.
+        """
+        return self.x.argmax(axis=1)
+
+    def argmin(self) -> np.ndarray:
+        """Index of the first minimum of each path, shape (n_paths,).
+
+        The time of the minimum is `paths.t[paths.argmin()]`.
+        """
+        return self.x.argmin(axis=1)
+
+    def positive_steps(self) -> np.ndarray:
+        """Which steps of each path are above zero, shape (n_paths, n_steps).
+
+        A step counts as positive if either of its endpoints is above zero.
+        For a simple random walk a step can't cross zero, so this is exact,
+        and it is the convention used in the discrete arcsine law. For other
+        walks, a step crossing zero counts entirely as positive.
+        """
+        return (self.x[:, :-1] > 0) | (self.x[:, 1:] > 0)
+
+    def time_positive(self) -> np.ndarray:
+        """Total time each path spends above zero, shape (n_paths,).
+
+        The total length of the positive steps, see `positive_steps`. For walks
+        other than the simple random walk this overcounts by at most one step
+        per crossing of zero.
+        """
+        # Sum of positive time increments.
+        return self.positive_steps() @ self.dt
+
+    def last_zero(self) -> np.ndarray:
+        """Time of the last zero of each path, shape (n_paths,).
+
+        A path that steps from x0 to x1 hits zero during that step if
+        x0*x1 <= 0 (i.e. if either is zero or else exactly one is negative).
+
+        We place the final zero using linear interpolation between the ticks:
+
+            t0 + (t1 - t0) * x0 / (x0 - x1)
+
+        which is exact for a simple random walk, where zeros fall on the grid.
+        Every path starts at zero, so there is always at least one.
+        """
+        x0 = self.x[:, :-1]
+        x1 = self.x[:, 1:]
+        hits = (x0*x1 <= 0)
+        # Index of the last step with a zero; argmax finds the first True, so
+        # search the steps in reverse.
+        last = self.n_steps - 1 - hits[:, ::-1].argmax(axis=1)
+        rows = np.arange(self.n_paths)
+        x0 = x0[rows, last]
+        x1 = x1[rows, last]
+        dt = self.t[last + 1] - self.t[last]
+        # A step from zero to zero has its last zero at its end.
+        flat = (x0 == x1)
+        fraction = np.divide(
+            x0,
+            x0 - x1,
+            out=np.ones_like(x0),
+            where=~flat,
+        )
+        return self.t[last] + dt*fraction
 
 #-----------------------------------------------------------------------------
 # Step distributions.
